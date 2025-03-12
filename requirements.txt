@@ -1,0 +1,11 @@
+streamlit
+opencv-python-headless
+numpy
+pandas
+openpyxl
+streamlit
+pyxlsb
+xlwings
+matplotlib
+Pillow
+office365-rest-python-client
