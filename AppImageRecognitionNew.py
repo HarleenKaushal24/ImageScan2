@@ -13,7 +13,6 @@ from io import BytesIO
 from PIL import Image
 from matplotlib import pyplot as plt
 
-
 # Constants
 TENANT_ID = st.secrets["TENANT_ID"]
 CLIENT_ID = st.secrets["CLIENT_ID"]
@@ -87,19 +86,7 @@ def fetch_images_from_sharepoint():
         st.error("Failed to fetch images from SharePoint folder")
         return []
 
-def save_images_from_excel(excel_file):
-    df = pd.read_excel(excel_file, engine='openpyxl')
-    
-    if not os.path.exists(IMAGE_FOLDER):
-        os.makedirs(IMAGE_FOLDER)
 
-    for i, row in df.iterrows():
-        if "ImageColumn" in df.columns:  # Replace with actual column name
-            img_data = row["ImageColumn"]
-            if isinstance(img_data, bytes):  # Ensure it's binary image data
-                img_path = os.path.join(IMAGE_FOLDER, f"image_{i}.jpg")
-                with open(img_path, "wb") as img_file:
-                    img_file.write(img_data)
 def main():
     """Main Streamlit App."""
     st.title("Image Recognition and Matching")
