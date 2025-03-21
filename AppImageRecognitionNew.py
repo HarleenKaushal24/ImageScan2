@@ -5,7 +5,6 @@ Created on Fri Mar 21 12:48:15 2025
 @author: Harleen
 """
 
-
 import streamlit as st
 import pandas as pd
 import cv2
@@ -14,9 +13,9 @@ import requests
 from io import BytesIO
 from PIL import Image
 from matplotlib import pyplot as plt
-#pip install python-barcode
 import barcode
 from barcode.writer import ImageWriter
+import concurrent.futures
 
 # Constants
 TENANT_ID = st.secrets["TENANT_ID"]
@@ -25,7 +24,6 @@ CLIENT_SECRET = st.secrets["CLIENT_SECRET"]
 SHAREPOINT_SITE = "boscoandroxysinc.sharepoint.com:/sites/BnR-Data"
 FILE_PATH = "/ImageFiles/img1.xlsm"
 IMAGE_FOLDER = "extracted_images"
-
 
 # Function to get access token
 def get_access_token():
@@ -65,9 +63,8 @@ def fetch_excel_from_sharepoint():
         st.error("Failed to fetch file from SharePoint")
         return None
 
-
-
-def fetch_images_from_sharepoint():
+# Function to fetch images from SharePoint in parallel
+def fetch_images_from_sharepoint_parallel():
     access_token = get_access_token()
     if not access_token:
         st.error("Failed to authenticate with SharePoint")
@@ -78,17 +75,45 @@ def fetch_images_from_sharepoint():
     site_response = requests.get(site_url, headers=headers)
     sharepoint_site = site_response.json()["id"].split(",")[1]
 
+    # Get the drive ID (this part is shared by both functions)
     drive_url = f"https://graph.microsoft.com/v1.0/sites/{sharepoint_site}/drives"
     drive_response = requests.get(drive_url, headers=headers)
     drive_id = drive_response.json()["value"][0]["id"]
 
+    # Fetch the list of image files in the folder
     folder_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/ImageFiles/extracted_images:/children"
     response = requests.get(folder_url, headers=headers)
 
     if response.status_code == 200:
-        return response.json()["value"]
+        # Extract image URLs
+        images = response.json()["value"]
+        image_urls = [img["@microsoft.graph.downloadUrl"] for img in images]
+
+        # Use ThreadPoolExecutor to fetch images concurrently
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            img_responses = list(executor.map(requests.get, image_urls))
+
+        # Return the images as responses along with filenames
+        return [(img["name"], response) for img, response in zip(images, img_responses)]
     else:
         st.error("Failed to fetch images from SharePoint folder")
+        return []
+
+# Function to process the fetched images
+def process_fetched_images():
+    # Fetch the images concurrently
+    img_responses = fetch_images_from_sharepoint_parallel()
+
+    # Process each image (you can further handle the responses here)
+    if img_responses:
+        images = []
+        for filename, response in img_responses:
+            if response.status_code == 200:
+                img_color = np.array(Image.open(BytesIO(response.content)))
+                images.append((filename, img_color))
+        return images
+    else:
+        st.error("No images fetched or error occurred.")
         return []
 
 # Function to generate barcode as an image
@@ -113,7 +138,7 @@ def generate_barcode_image(barcode_string):
     img.save("barcode.png", format="PNG")
     return img
 
-
+# Main function to run the Streamlit app
 def main():
     """Main Streamlit App."""
     st.title("Test APP")
@@ -161,17 +186,12 @@ def find_best_matches(target_img, df):
                 return
 
             # Fetch images from SharePoint
-            sharepoint_images = fetch_images_from_sharepoint()
+            sharepoint_images = process_fetched_images()
 
             match_scores = {}
 
             # Loop through SharePoint images and match them
-            for image_info in sharepoint_images:
-                # Get image URL from SharePoint
-                image_url = image_info["@microsoft.graph.downloadUrl"]
-                img_response = requests.get(image_url)
-                img_color = np.array(Image.open(BytesIO(img_response.content)))
-
+            for filename, img_color in sharepoint_images:
                 # Convert to grayscale and remove background
                 img_gray = cv2.cvtColor(remove_background(img_color), cv2.COLOR_BGR2GRAY)
 
@@ -200,11 +220,11 @@ def find_best_matches(target_img, df):
                     if m.distance < 0.7 * n.distance:
                         good_matches.append(m)
 
-                # Store match information
-                match_scores[image_info["name"]] = (len(good_matches), img_gray, img_color, kp, good_matches)
+                # Store match information using the image filename
+                match_scores[filename] = len(good_matches)
 
             # Sort the matches by the number of good matches, and get the top match
-            top_match = sorted(match_scores.items(), key=lambda x: x[1][0], reverse=True)[0]
+            top_match = sorted(match_scores.items(), key=lambda x: x[1], reverse=True)[0]
 
             # Display the top match and ITM value
             display_results(top_match, target_img_gray, target_kp, df)
@@ -212,43 +232,28 @@ def find_best_matches(target_img, df):
     except Exception as e:
         st.error(f"Unexpected error: {e}")
 
-
-
+# Function to display the results
 def display_results(top_match, target_img_gray, target_kp, df):
     """Display the top matching image and ITM value along with barcode."""
     # Extract match data
-    img_name, (match_count, img_gray, img_color, kp, matches) = top_match
+    img_name, match_count = top_match
 
     # Display match count and ITM value from Excel
     st.write(f"**Top Match: {img_name} ({match_count} good matches)**")
 
     # Extract row number from filename (assuming filename format is consistent)
-    #matched_row = extract_row_number(img_name, len(df))
-    #img_name="BrownCoconutDonut.png"
-    matched_row=df[df['ImageName'] == img_name]
+    matched_row = df[df['ImageName'] == img_name]
     if matched_row is not None:
-        #matched_data = df.iloc[matched_row]
-        
-        # Only display ITM value
         itm_value = matched_row["ITM"].values[0]
-        BC=str(matched_row["Barcode"].values[0])
+        BC = str(matched_row["Barcode"].values[0])
         st.write(f"**ITM Name**: {itm_value}")
         
         # Generate and display barcode image for the matched ITM
         barcode_img = generate_barcode_image(BC)
         st.image(barcode_img, caption=f"Barcode for {img_name}", use_container_width=True)
-
-        # Display the matched image with keypoints
-        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-        ax[0].imshow(cv2.drawKeypoints(target_img_gray, target_kp, None, color=(0, 255, 0)), cmap='gray')
-        ax[0].set_title("Target Image")
-        ax[1].imshow(cv2.drawKeypoints(img_gray, kp, None, color=(255, 0, 0)), cmap='gray')
-        ax[1].set_title(f"Matched Image")
-        st.pyplot(fig)
+        
     else:
         st.error("No matching data found in Excel.")
-
-
 
 def remove_background(img):
     """Remove white background."""
@@ -262,9 +267,6 @@ def remove_background(img):
         return img
     except Exception:
         return img
-
-
-
 
 if __name__ == "__main__":
     main()
