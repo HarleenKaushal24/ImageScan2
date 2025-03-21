@@ -177,7 +177,7 @@ def find_best_matches(target_img, df):
                 match_scores[image_info["name"]] = (len(matches), img_gray, img_color, kp, matches)
 
             # Sort the matches by number of good matches, and get the top 1 match
-            top_match = sorted(match_scores.items(), key=lambda x: x[1][0], reverse=True)[:5]
+            top_match = sorted(match_scores.items(), key=lambda x: x[1][0], reverse=True)[0]
 
             # Display the top match and ITM value
             display_results(top_match, target_img_gray, target_kp, df)
