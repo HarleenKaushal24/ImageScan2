@@ -138,12 +138,19 @@ def main():
         find_best_matches(target_img, df)
 
 def find_best_matches(target_img, df):
-    """Find and display best matching image from SharePoint."""
+    """Find and display the best matching image from SharePoint."""
     try:
         # Show progress bar while processing
         with st.spinner("Finding best match..."):
             # Convert target image to grayscale and resize for matching
-            target_img_gray = cv2.cvtColor(cv2.resize(target_img, (300, 300)), cv2.COLOR_BGR2GRAY)
+            target_img_resized = cv2.resize(target_img, (300, 300))
+            target_img_gray = cv2.cvtColor(target_img_resized, cv2.COLOR_BGR2GRAY)
+
+            # Apply histogram equalization for better contrast
+            target_img_gray = cv2.equalizeHist(target_img_gray)
+
+            # Optional: Apply Gaussian Blur to reduce noise
+            target_img_gray = cv2.GaussianBlur(target_img_gray, (5, 5), 0)
 
             # SIFT feature detection
             sift = cv2.SIFT_create()
@@ -158,25 +165,45 @@ def find_best_matches(target_img, df):
 
             match_scores = {}
 
+            # Loop through SharePoint images and match them
             for image_info in sharepoint_images:
                 # Get image URL from SharePoint
                 image_url = image_info["@microsoft.graph.downloadUrl"]
                 img_response = requests.get(image_url)
                 img_color = np.array(Image.open(BytesIO(img_response.content)))
 
-                # Process and match
+                # Convert to grayscale and remove background
                 img_gray = cv2.cvtColor(remove_background(img_color), cv2.COLOR_BGR2GRAY)
+
+                # Apply histogram equalization to the SharePoint image
+                img_gray = cv2.equalizeHist(img_gray)
+
+                # Optional: Apply Gaussian Blur
+                img_gray = cv2.GaussianBlur(img_gray, (5, 5), 0)
+
+                # Detect keypoints and descriptors in the SharePoint image
                 kp, des = sift.detectAndCompute(img_gray, None)
                 if des is None:
                     continue
 
-                # Feature matching
-                bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
-                matches = sorted(bf.match(target_des, des), key=lambda x: x.distance)
+                # Feature matching using FLANN-based matcher
+                FLANN_INDEX_KDTREE = 1
+                index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+                search_params = dict(checks=50)  # Higher number of checks for better accuracy
 
-                match_scores[image_info["name"]] = (len(matches), img_gray, img_color, kp, matches)
+                flann = cv2.FlannBasedMatcher(index_params, search_params)
+                matches = flann.knnMatch(target_des, des, k=2)
 
-            # Sort the matches by number of good matches, and get the top 1 match
+                # Apply Lowe's ratio test to filter out poor matches
+                good_matches = []
+                for m, n in matches:
+                    if m.distance < 0.7 * n.distance:
+                        good_matches.append(m)
+
+                # Store match information
+                match_scores[image_info["name"]] = (len(good_matches), img_gray, img_color, kp, good_matches)
+
+            # Sort the matches by the number of good matches, and get the top match
             top_match = sorted(match_scores.items(), key=lambda x: x[1][0], reverse=True)[0]
 
             # Display the top match and ITM value
@@ -184,6 +211,7 @@ def find_best_matches(target_img, df):
 
     except Exception as e:
         st.error(f"Unexpected error: {e}")
+
 
 
 def display_results(top_match, target_img_gray, target_kp, df):
@@ -196,13 +224,14 @@ def display_results(top_match, target_img_gray, target_kp, df):
 
     # Extract row number from filename (assuming filename format is consistent)
     #matched_row = extract_row_number(img_name, len(df))
+    #img_name="BrownCoconutDonut.png"
     matched_row=df[df['ImageName'] == img_name]
     if matched_row is not None:
         #matched_data = df.iloc[matched_row]
         
         # Only display ITM value
-        itm_value = matched_row["ITM"]
-        BC=str(matched_row["Barcode"])
+        itm_value = matched_row["ITM"].values[0]
+        BC=str(matched_row["Barcode"].values[0])
         st.write(f"**ITM Name**: {itm_value}")
         
         # Generate and display barcode image for the matched ITM
