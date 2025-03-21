@@ -7,5 +7,6 @@ streamlit
 pyxlsb
 xlwings
 matplotlib
+python-barcode
 Pillow
 office365-rest-python-client
