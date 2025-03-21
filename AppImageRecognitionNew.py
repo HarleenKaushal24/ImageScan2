@@ -12,7 +12,6 @@ import numpy as np
 import requests
 from io import BytesIO
 from PIL import Image
-from matplotlib import pyplot as plt
 import barcode
 from barcode.writer import ImageWriter
 import concurrent.futures
@@ -63,6 +62,14 @@ def fetch_excel_from_sharepoint():
         st.error("Failed to fetch file from SharePoint")
         return None
 
+# Preprocessing function to standardize images
+def preprocess_image(img):
+    img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Convert to grayscale
+    img_resized = cv2.resize(img_gray, (300, 300))  # Resize image for consistency
+    img_equalized = cv2.equalizeHist(img_resized)  # Apply histogram equalization
+    img_denoised = cv2.GaussianBlur(img_equalized, (5, 5), 0)  # Apply Gaussian blur to reduce noise
+    return img_denoised
+
 # Function to fetch images from SharePoint in parallel
 def fetch_images_from_sharepoint_parallel():
     access_token = get_access_token()
@@ -75,25 +82,20 @@ def fetch_images_from_sharepoint_parallel():
     site_response = requests.get(site_url, headers=headers)
     sharepoint_site = site_response.json()["id"].split(",")[1]
 
-    # Get the drive ID (this part is shared by both functions)
     drive_url = f"https://graph.microsoft.com/v1.0/sites/{sharepoint_site}/drives"
     drive_response = requests.get(drive_url, headers=headers)
     drive_id = drive_response.json()["value"][0]["id"]
 
-    # Fetch the list of image files in the folder
     folder_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/ImageFiles/extracted_images:/children"
     response = requests.get(folder_url, headers=headers)
 
     if response.status_code == 200:
-        # Extract image URLs
         images = response.json()["value"]
         image_urls = [img["@microsoft.graph.downloadUrl"] for img in images]
 
-        # Use ThreadPoolExecutor to fetch images concurrently
         with concurrent.futures.ThreadPoolExecutor() as executor:
             img_responses = list(executor.map(requests.get, image_urls))
 
-        # Return the images as responses along with filenames
         return [(img["name"], response) for img, response in zip(images, img_responses)]
     else:
         st.error("Failed to fetch images from SharePoint folder")
@@ -101,16 +103,14 @@ def fetch_images_from_sharepoint_parallel():
 
 # Function to process the fetched images
 def process_fetched_images():
-    # Fetch the images concurrently
     img_responses = fetch_images_from_sharepoint_parallel()
-
-    # Process each image (you can further handle the responses here)
     if img_responses:
         images = []
         for filename, response in img_responses:
             if response.status_code == 200:
                 img_color = np.array(Image.open(BytesIO(response.content)))
-                images.append((filename, img_color))
+                img_color_preprocessed = preprocess_image(img_color)  # Preprocess fetched image
+                images.append((filename, img_color_preprocessed))
         return images
     else:
         st.error("No images fetched or error occurred.")
@@ -133,9 +133,7 @@ def generate_barcode_image(barcode_string):
     img_stream.seek(0)
 
     img = Image.open(img_stream)
-
-    # Save the barcode image as PNG to ensure lossless quality
-    img.save("barcode.png", format="PNG")
+    img.save("barcode.png", format="PNG")  # Save the barcode image as PNG to ensure lossless quality
     return img
 
 # Main function to run the Streamlit app
@@ -155,7 +153,6 @@ def main():
     uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
 
     if uploaded_file:
-        # Once image is uploaded, start the matching process
         target_img = np.array(Image.open(uploaded_file))
         target_img = cv2.cvtColor(target_img, cv2.COLOR_RGB2BGR)
 
@@ -165,19 +162,9 @@ def main():
 def find_best_matches(target_img, df):
     """Find and display the best matching image from SharePoint."""
     try:
-        # Show progress bar while processing
         with st.spinner("Finding best match..."):
-            # Convert target image to grayscale and resize for matching
-            target_img_resized = cv2.resize(target_img, (300, 300))
-            target_img_gray = cv2.cvtColor(target_img_resized, cv2.COLOR_BGR2GRAY)
+            target_img_gray = preprocess_image(target_img)  # Preprocess the target image
 
-            # Apply histogram equalization for better contrast
-            target_img_gray = cv2.equalizeHist(target_img_gray)
-
-            # Optional: Apply Gaussian Blur to reduce noise
-            target_img_gray = cv2.GaussianBlur(target_img_gray, (5, 5), 0)
-
-            # SIFT feature detection
             sift = cv2.SIFT_create()
             target_kp, target_des = sift.detectAndCompute(target_img_gray, None)
 
@@ -185,23 +172,12 @@ def find_best_matches(target_img, df):
                 st.error("No features detected in the uploaded image.")
                 return
 
-            # Fetch images from SharePoint
             sharepoint_images = process_fetched_images()
 
             match_scores = {}
 
             # Loop through SharePoint images and match them
-            for filename, img_color in sharepoint_images:
-                # Convert to grayscale and remove background
-                img_gray = cv2.cvtColor(remove_background(img_color), cv2.COLOR_BGR2GRAY)
-
-                # Apply histogram equalization to the SharePoint image
-                img_gray = cv2.equalizeHist(img_gray)
-
-                # Optional: Apply Gaussian Blur
-                img_gray = cv2.GaussianBlur(img_gray, (5, 5), 0)
-
-                # Detect keypoints and descriptors in the SharePoint image
+            for filename, img_gray in sharepoint_images:
                 kp, des = sift.detectAndCompute(img_gray, None)
                 if des is None:
                     continue
@@ -209,7 +185,7 @@ def find_best_matches(target_img, df):
                 # Feature matching using FLANN-based matcher
                 FLANN_INDEX_KDTREE = 1
                 index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
-                search_params = dict(checks=50)  # Higher number of checks for better accuracy
+                search_params = dict(checks=50)
 
                 flann = cv2.FlannBasedMatcher(index_params, search_params)
                 matches = flann.knnMatch(target_des, des, k=2)
@@ -220,7 +196,6 @@ def find_best_matches(target_img, df):
                     if m.distance < 0.7 * n.distance:
                         good_matches.append(m)
 
-                # Store match information using the image filename
                 match_scores[filename] = len(good_matches)
 
             # Sort the matches by the number of good matches, and get the top match
@@ -235,38 +210,21 @@ def find_best_matches(target_img, df):
 # Function to display the results
 def display_results(top_match, target_img_gray, target_kp, df):
     """Display the top matching image and ITM value along with barcode."""
-    # Extract match data
     img_name, match_count = top_match
 
-    # Display match count and ITM value from Excel
     st.write(f"**Top Match: {img_name} ({match_count} good matches)**")
 
-    # Extract row number from filename (assuming filename format is consistent)
     matched_row = df[df['ImageName'] == img_name]
     if matched_row is not None:
         itm_value = matched_row["ITM"].values[0]
         BC = str(matched_row["Barcode"].values[0])
         st.write(f"**ITM Name**: {itm_value}")
         
-        # Generate and display barcode image for the matched ITM
         barcode_img = generate_barcode_image(BC)
         st.image(barcode_img, caption=f"Barcode for {img_name}", use_container_width=True)
         
     else:
         st.error("No matching data found in Excel.")
-
-def remove_background(img):
-    """Remove white background."""
-    try:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            x, y, w, h = cv2.boundingRect(contours[0])
-            img = img[y:y+h, x:x+w]
-        return img
-    except Exception:
-        return img
 
 if __name__ == "__main__":
     main()
